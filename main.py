@@ -4,41 +4,55 @@ import numpy as np
 # Load the video file
 cap = cv2.VideoCapture(r"C:\Users\mitul\OneDrive\GolfApp\Tiger golf swing (1).mp4")
 
-# Create a background subtractor object for motion detection
+# Create a background subtractor for motion detection
 backSub = cv2.createBackgroundSubtractorMOG2()
 
+# Read the first frame to initialise
+ret, frame = cap.read()
+if not ret:
+    print("Can't receive frame (stream end?). Exiting ...")
+    exit()
+
+# Resize the first frame for consistent processing
+frame = cv2.resize(frame, (600, 600))
+
+# Allow user to select the region of interest (ROI)
+roi = cv2.selectROI(frame, False)
+
 while True:
-    # Read a frame from the video
+    # Read next frame from video
     ret, frame = cap.read()
-    if not ret:  # Stop if video ends or frame not read
+    if not ret:
         break
 
-    # Resize the frame for consistent processing
+    # Resize the frame to maintain size consistency
     frame = cv2.resize(frame, (600, 600))
 
-    # Apply background subtraction to extract moving objects
+    # Apply background subtraction to isolate moving objects (foreground mask)
     fgMask = backSub.apply(frame)
 
-    # Find contours in the foreground mask, representing moving objects
+    # Find contours in the foreground mask representing motion regions
     contours, _ = cv2.findContours(fgMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     for contour in contours:
-        # Get bounding rectangle for each contour
+        # Get bounding rectangle for each moving object
         x, y, w, h = cv2.boundingRect(contour)
 
-        # Draw a green rectangle around detected moving region
-        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        # Only consider contours fully inside the ROI
+        if roi[0] < x < roi[0] + roi[2] and roi[1] < y < roi[1] + roi[3] and \
+           roi[0] < x + w < roi[0] + roi[2] and roi[1] < y + h < roi[1] + roi[3]:
+            # Draw bounding box around motion within ROI
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
-    # Display the original frame with annotations
+    # Display the annotated frame and foreground mask for visual feedback
     cv2.imshow('Frame', frame)
-    # Display the foreground mask for debugging
     cv2.imshow('FG Mask', fgMask)
 
-    # Break the loop if 'q' or ESC key is pressed
+    # Exit loop if 'q' or ESC is pressed
     keyboard = cv2.waitKey(30)
     if keyboard == ord('q') or keyboard == 27:
         break
 
-# Release resources and close windows
+# Release video capture and close windows
 cap.release()
 cv2.destroyAllWindows()
