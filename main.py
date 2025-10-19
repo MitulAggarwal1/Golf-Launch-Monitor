@@ -17,7 +17,7 @@ g = 9.81 / fps**2
 # Read frames until the club has moved noticeably
 for _ in range(65):  # adjust this value if needed
     ret, frame = cap.read()
-    if not ret:
+    if not ret or frame is None:
         break
     frame = cv2.resize(frame, (600, 600))
 
@@ -42,7 +42,7 @@ path_img = np.zeros_like(frame)
 while True:
     # Read a new frame
     ret, frame = cap.read()
-    if not ret:
+    if not ret or frame is None:
         break
 
     # Resize frame
@@ -83,9 +83,6 @@ while True:
 
     # Display the frame
     cv2.imshow("Tracking", frame)
-
-    # Add a short delay if needed for clarity (optional)
-    # cv2.waitKey(100)
 
     # Exit if ESC key is pressed
     if cv2.waitKey(1) & 0xFF == 27:
