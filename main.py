@@ -1,174 +1,136 @@
+import os
+import time
 import cv2
-import numpy as np
-import math
+from ultralytics import YOLO
 
 # =========================
 # USER SETTINGS
 # =========================
 VIDEO_PATH = r"C:\Users\mitul\OneDrive\GolfApp\Tiger golf swing 2.mp4"
 
-# Scale in metres per pixel (calibrated for your video)
-SCALE_M_PER_PX = 0.003893
+# Prefer OpenVINO model directory (if exported), otherwise fallback to PyTorch weights file
+OPENVINO_DIR = r"C:\Users\mitul\runs\detect\train2\weights\best_openvino_model"
+BEST_PT_PATH = r"C:\Users\mitul\runs\detect\train2\weights\best.pt"
 
-# Actual swing duration in seconds (impact to finish)
-REAL_SWING_DURATION = 1.5
+# Output path for the processed annotated video
+OUT_PATH = r".\ball_annotated.mp4"
 
-# Gravitational acceleration in m/s^2
-G = 9.81
+# Detection and display parameters for inference
+IMG_SIZE = 960       # Image size used by YOLO for inference; more pixels = slower but more accurate
+MIN_WIDTH = 960      # Minimum width of video frames resized for detection consistency
+CONF_THRES = 0.20    # Confidence threshold for filtering YOLO detections
+IOU_THRES = 0.60     # Intersection over Union threshold for non-maximum suppression
+VID_STRIDE = 1       # Frame skipping interval during processing; 1 means every frame
+SHOW_PREVIEW_600 = True  # Whether to show live 600x600 preview window during video processing
+DRAW_CONFIDENCE = True   # Whether to display confidence score on detected bounding boxes
 
-# Contour filtering thresholds
-MIN_CONTOUR_AREA = 90
-MAX_CONTOUR_AREA = 100
-ASPECT_RATIO_TOL = 0.2  # close to square bounding boxes
+def load_model():
+    """Load the OpenVINO model if available, else fall back to PyTorch model."""
+    if os.path.isdir(OPENVINO_DIR):
+        print(f"[MODEL] Loading OpenVINO model: {OPENVINO_DIR}")
+        return YOLO(OPENVINO_DIR)
+    elif os.path.isfile(BEST_PT_PATH):
+        print(f"[MODEL] OpenVINO not found. Loading PyTorch model: {BEST_PT_PATH}")
+        return YOLO(BEST_PT_PATH)
+    else:
+        raise FileNotFoundError(
+            f"Could not find model.\nTried OpenVINO directory:\n  {OPENVINO_DIR}\n"
+            f"and PyTorch weights file:\n  {BEST_PT_PATH}"
+        )
 
-
-# =========================
-# HELPERS
-# =========================
-def dump_metadata(cap):
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    duration_video = frame_count / fps if fps > 0 else float("nan")
-    print(f"[META] FPS: {fps:.3f}")
-    print(f"[META] Frames: {frame_count}")
-    print(f"[META] Duration (video): {duration_video:.3f} s")
-    return fps, frame_count, duration_video
-
-
-def find_launch_idx(points, thresh_px=5.0):
-    """Find first index where movement exceeds threshold (in px)"""
-    if len(points) < 2:
-        return 0
-    x0, y0 = points[0]
-    for i in range(1, len(points)):
-        dx = points[i][0] - x0
-        dy = points[i][1] - y0
-        if (dx * dx + dy * dy) ** 0.5 > thresh_px:
-            return i
-    return 0
-
-
-# =========================
-# MAIN PROGRAM
-# =========================
 def main():
+    # Load YOLO detection model
+    model = load_model()
+
+    # Open the input video file
     cap = cv2.VideoCapture(VIDEO_PATH)
-    if not cap.isOpened():
-        print(f"Could not open video: {VIDEO_PATH}")
-        return
+    assert cap.isOpened(), f"Could not open video: {VIDEO_PATH}"
 
-    fps, frame_count, duration_video = dump_metadata(cap)
+    # Get the original properties of the video to preserve them in output
+    orig_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    print(f"[META] fps={orig_fps:.2f} size={orig_w}x{orig_h}")
 
-    # Calculate slow-motion correction factor (real duration / video duration)
-    slow_factor = REAL_SWING_DURATION / duration_video if duration_video > 0 else 1.0
-    print(f"[TIME] REAL_SWING_DURATION={REAL_SWING_DURATION:.3f}s  slow_factor={slow_factor:.4f}")
+    # Initialize a video writer with original dimensions and adjusted FPS to save annotated results
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    out_fps = orig_fps / max(VID_STRIDE, 1)
+    writer = cv2.VideoWriter(OUT_PATH, fourcc, out_fps, (orig_w, orig_h))
+    print(f"[OUT ] Writing to: {os.path.abspath(OUT_PATH)} @ {out_fps:.2f} FPS")
 
-    backSub = cv2.createBackgroundSubtractorMOG2()
+    t0 = time.time()
+    processed_frames = 0
+    frame_idx = 0
 
-    ret, frame = cap.read()
-    if not ret:
-        print("Can't read first frame.")
-        cap.release()
-        return
-
-    frame = cv2.resize(frame, (600, 600))
-    print("[INFO] Select ROI, press ENTER/SPACE to confirm, 'c' to cancel.")
-    roi = cv2.selectROI("ROI selector", frame, False, False)
-    cv2.destroyWindow("ROI selector")
-
-    centers = []
-
-    print("[INFO] Press 'q' to stop tracking early (otherwise runs full video).")
     while True:
-        ret, frame = cap.read()
-        if not ret:
+        ok, frame = cap.read()
+        if not ok:
             break
+        frame_idx += 1
 
-        frame = cv2.resize(frame, (600, 600))
-        fgMask = backSub.apply(frame)
-        contours, _ = cv2.findContours(fgMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Skip frames if the stride is greater than 1 to speed up processing
+        if (frame_idx - 1) % max(VID_STRIDE, 1) != 0:
+            continue
 
-        for cnt in contours:
-            area = cv2.contourArea(cnt)
-            if MIN_CONTOUR_AREA < area < MAX_CONTOUR_AREA:
-                x, y, w, h = cv2.boundingRect(cnt)
-                ar = float(w) / h if h != 0 else 0
-                if 1 - ASPECT_RATIO_TOL < ar < 1 + ASPECT_RATIO_TOL:
-                    if roi[0] < x < roi[0] + roi[2] and roi[1] < y < roi[1] + roi[3]:
-                        if 0 <= x <= frame.shape[1] and 0 <= y <= frame.shape[0]:
-                            cx, cy = int(x + w / 2), int(y + h / 2)
-                            centers.append((cx, cy))
-                            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        # Upscale smaller frames to minimum width for consistent detection quality
+        h, w = frame.shape[:2]
+        if w < MIN_WIDTH:
+            scale_h = int(h * (MIN_WIDTH / w))
+            proc = cv2.resize(frame, (MIN_WIDTH, scale_h))
+        else:
+            proc = frame
 
-        # Draw path connecting center points
-        for i in range(1, len(centers)):
-            cv2.line(frame, centers[i - 1], centers[i], (0, 0, 255), 2)
+        # Run YOLO object detection inference on the current frame
+        res = model.predict(
+            proc,
+            imgsz=IMG_SIZE,
+            conf=CONF_THRES,
+            iou=IOU_THRES,
+            verbose=False
+        )[0]
 
-        # Overlay info band
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (0, 0), (frame.shape[1], 28), (255, 255, 255), -1)
-        cv2.addWeighted(overlay, 0.35, frame, 0.65, 0, frame)
-        cv2.putText(frame, f"scale={SCALE_M_PER_PX:.6f} m/px  slow={slow_factor:.3f}x",
-                    (10, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+        # Scale the detected bounding boxes back to original frame size
+        sx = frame.shape[1] / proc.shape[1]
+        sy = frame.shape[0] / proc.shape[0]
 
-        cv2.imshow("Frame", frame)
-        key = cv2.waitKey(1) & 0xFF
-        if key in (ord('q'), 27):
-            break
+        # If detections exist, draw bounding boxes and optionally confidence scores
+        if res.boxes is not None:
+            boxes_xyxy = res.boxes.xyxy.cpu().numpy()
+            confs = res.boxes.conf.cpu().numpy()
+            for (x1, y1, x2, y2), c in zip(boxes_xyxy, confs):
+                x1, x2 = int(x1 * sx), int(x2 * sx)
+                y1, y2 = int(y1 * sy), int(y2 * sy)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 200, 0), 2)
+                if DRAW_CONFIDENCE:
+                    cv2.putText(
+                        frame, f"{c:.2f}", (x1, max(0, y1 - 6)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 0), 1
+                    )
 
+        # Write the annotated frame to the output video
+        writer.write(frame)
+        processed_frames += 1
+
+        # Display optional live preview window with current processing FPS
+        if SHOW_PREVIEW_600:
+            disp = cv2.resize(frame, (600, 600))
+            elapsed = time.time() - t0
+            fps_proc = processed_frames / max(elapsed, 1e-6)
+            cv2.putText(
+                disp, f"proc FPS: {fps_proc:.1f}",
+                (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2
+            )
+            cv2.imshow("Ball detector (preview)", disp)
+            if (cv2.waitKey(1) & 0xFF) in (ord('q'), 27):
+                break
+
+    # Clean up resources after processing
     cap.release()
+    writer.release()
     cv2.destroyAllWindows()
-
-    # Analysis of tracked points (two-point approach)
-    if len(centers) < 2:
-        print("[RESULT] Insufficient points tracked for analysis.")
-        return
-
-    start_idx = find_launch_idx(centers)
-    end_idx = len(centers) - 1
-
-    if end_idx <= start_idx:
-        start_idx = 0
-        end_idx = 1 if len(centers) > 1 else 0
-
-    (x0, y0) = centers[start_idx]
-    (x1, y1) = centers[end_idx]
-
-    dx_pix = float(x1 - x0)
-    dy_pix = float(y1 - y0)
-    dist_pix = float(np.hypot(dx_pix, dy_pix))
-    dist_m = dist_pix * SCALE_M_PER_PX
-
-    frames_spanned = end_idx - start_idx
-    dt_video = frames_spanned / fps
-    dt_real = dt_video * slow_factor
-    if dt_real <= 0:
-        print("[WARN] Non-positive real time; check metadata and slow_factor.")
-        dt_real = 1e-6
-
-    dx_m = dx_pix * SCALE_M_PER_PX
-    dy_m = -dy_pix * SCALE_M_PER_PX  # Flip Y to positive up
-    vx = dx_m / dt_real
-    vy = dy_m / dt_real
-    v0 = math.hypot(vx, vy)
-    angle_rad = math.atan2(vy, vx)
-    angle_deg = math.degrees(angle_rad)
-
-    T_ideal = 2 * v0 * math.sin(angle_rad) / G if v0 > 0 else 0.0
-    H_ideal = (v0**2) * (math.sin(angle_rad)**2) / (2 * G)
-    D_ideal = (v0**2) * math.sin(2 * angle_rad) / G
-
-    print("\n--- TWO-POINT SUMMARY ---")
-    print(f"Start idx: {start_idx}, End idx: {end_idx}, Frames: {frames_spanned}")
-    print(f"Δx = {dx_pix:.2f} px, Δy = {dy_pix:.2f} px, Distance = {dist_pix:.2f} px")
-    print(f"Distance = {dist_m:.3f} m (Scale: {SCALE_M_PER_PX:.6f} m/px)")
-    print(f"dt_video = {dt_video:.4f} s, dt_real = {dt_real:.4f} s (slow_factor={slow_factor:.4f})")
-    print(f"Estimated Launch Angle: {angle_deg:.2f}°")
-    print(f"Initial Velocity: {v0:.2f} m/s | {v0*3.6:.2f} km/h | {v0*2.237:.2f} mph")
-    print(f"Flight Time (ideal): {T_ideal:.2f} s")
-    print(f"Apex Height (ideal): {H_ideal:.2f} m")
-    print(f"Horizontal Distance (ideal): {D_ideal:.2f} m")
+    print(f"[DONE] Saved annotated video to: {os.path.abspath(OUT_PATH)}")
 
 
+# Execute main program
 if __name__ == "__main__":
     main()
