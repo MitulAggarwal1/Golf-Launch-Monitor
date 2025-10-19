@@ -1,132 +1,146 @@
 import cv2
 import numpy as np
 import math
+from pathlib import Path
 
-# Load the video
-cap = cv2.VideoCapture(r"C:\Users\mitul\OneDrive\GolfApp\Tiger golf swing (1).mp4")
+# Prompt user for golf club selection
+club = input("Please select club: ")
 
-# Get the frames per second of the video
+# Prompt for the path to the swing video file
+video_path = input("Please provide the path to your " + club + " swing video: ")
+
+# Remove any quotation marks from the path string
+video_path = video_path.strip('"')
+
+# Convert the string path to a Path object for better path handling
+video_path = Path(video_path)
+
+# Load the video using OpenCV, converting Path object to string
+cap = cv2.VideoCapture(str(video_path))
+
+# Obtain frames per second of the video
 fps = cap.get(cv2.CAP_PROP_FPS)
 
-# Assume the scale of the video in metres per pixel
-scale = 0.005  # Adjust this based on your setup
+# Scale conversion: metres per pixel (adjust based on video calibration)
+scale = 0.005
 
-# Convert acceleration due to gravity to metres per frame squared
-g = 9.81 / fps**2
+# Gravity constant (negative for frame wise calculation)
+g = -9.81
 
-# Create a background subtractor for foreground detection
+# Create background subtractor to extract moving regions
 backSub = cv2.createBackgroundSubtractorMOG2()
 
-# Read the first frame
+# Read the first frame and confirm video is accessible
 ret, frame = cap.read()
 if not ret:
     print("Can't receive frame (stream end?). Exiting ...")
     exit()
 
-# Resize initial frame for consistent processing
+# Resize frame to a standard manageable size
 frame = cv2.resize(frame, (600, 600))
 
-# Define the region of interest (ROI) manually
-roi = cv2.selectROI(frame, False)
+# Predefined ROI for the golf swing related to your setup (x,y,width,height)
+roi = (267, 455, 328, 137)
 
-# Define minimum and maximum contour area to filter noise
+# Set the contour size limits for filtering noise efficiently
 min_contour_area = 90
 max_contour_area = 100
 
-# Define the tolerance for detecting roughly square contours
+# Aspect ratio tolerance to detect near-square bounding boxes
 aspect_ratio_tolerance = 0.2
 
-# Initialize list to store centre points of bounding boxes
+# Initialise list to record centre points of detected bounding boxes
 center_points = []
 
 while True:
     ret, frame = cap.read()
-    if not ret:
+    if not ret:  # Stop loop if no frames are left
         break
 
-    # Resize each frame for processing
+    # Resize the current frame consistently
     frame = cv2.resize(frame, (600, 600))
 
-    # Apply background subtraction to get the foreground mask
+    # Apply background subtraction to isolate moving foreground
     fgMask = backSub.apply(frame)
 
-    # Find contours on the foreground mask
+    # Detect contours in the foreground mask
     contours, _ = cv2.findContours(fgMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     for contour in contours:
         area = cv2.contourArea(contour)
+        # Filter contours by the area range
         if min_contour_area < area < max_contour_area:
             x, y, w, h = cv2.boundingRect(contour)
             aspect_ratio = float(w) / h
 
-            # Only consider contours which are approximately square
+            # Confirm bounding box is approximately square
             if (1 - aspect_ratio_tolerance) < aspect_ratio < (1 + aspect_ratio_tolerance):
 
-                # Check if bounding box is fully inside the ROI and within frame boundaries
+                # Check if bounding box lies completely inside ROI and frame boundaries
                 if (roi[0] < x < roi[0] + roi[2] and
                     roi[1] < y < roi[1] + roi[3] and
                     0 <= x <= frame.shape[1] and
                     0 <= y <= frame.shape[0]):
 
-                    # Draw bounding rectangle on the frame
+                    # Draw bounding rectangle around the detected object
                     cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
-                    # Store the centre point of the bounding box
-                    center_points.append((int(x + w / 2), int(y + h / 2)))
+                    # Calculate and store centre point coordinates
+                    center_point = (int(x + w / 2), int(y + h / 2))
+                    center_points.append(center_point)
 
-    # Draw the path linking the detected centre points
+    # Draw connecting lines between centre points to visualise the path
     for i in range(1, len(center_points)):
         cv2.line(frame, center_points[i - 1], center_points[i], (0, 0, 255), 2)
 
-    # Display the current frame
+    # Display the annotated frame
     cv2.imshow('Frame', frame)
-    #cv2.imshow('FG Mask', fgMask)  # Uncomment to see foreground mask
+    # Uncomment next line to view foreground mask for debugging
+    # cv2.imshow('FG Mask', fgMask)
 
-    # Exit if 'q' or ESC keys are pressed
+    # Exit loop on pressing 'q' or ESC key
     keyboard = cv2.waitKey(1)
     if keyboard == ord('q') or keyboard == 27:
         break
 
+# Calculation of initial velocity and flight parameters
 if len(center_points) > 1:
-    # Determine first position where ball moves appreciably
     for i in range(1, len(center_points)):
         dx = center_points[i][0] - center_points[0][0]
         dy = center_points[i][1] - center_points[0][1]
-        if np.sqrt(dx**2 + dy**2) > 5:  # Movement threshold, adjust as needed
+        # Detect significant movement of ball
+        if np.sqrt(dx**2 + dy**2) > 5:
             break
 
-    # Calculate time difference in seconds
+    # Compute time difference based on frame count and fps
     dt = i / fps
 
-    # Compute initial velocity in metres per frame
+    # Calculate velocity in metres/frame scaled by scale factor
     v0 = scale * np.sqrt(dx**2 + dy**2) / dt
 
     # Convert velocity to metres per second
     v0_mps = v0 * fps
 
-    # Convert velocity to km/h and mph
+    # Convert velocities to km/h and mph for common understanding
     v0_kmph = v0_mps * 3.6
     v0_mph = v0_mps * 2.237
 
-    print(f"Speed: {v0} m/frame, {v0_mps} m/s, {v0_kmph} km/h, {v0_mph} mph")
-
-    # Calculate the launch angle in radians and degrees
+    # Calculate launch angle in radians and then degrees
     angle_radians = math.atan2(dy, dx)
     angle_degrees = math.degrees(angle_radians)
 
-    print(f"Angle: {angle_radians} radians, {angle_degrees} degrees")
-
-    # Calculate flight time, apex height, and horizontal distance (metres)
+    # Calculate trajectory parameters: flight time, apex height, horizontal distance
     t = 2 * v0_mps * math.sin(angle_radians) / g
     h = v0_mps**2 * math.sin(angle_radians)**2 / (2 * g)
     d = v0_mps**2 * math.sin(2 * angle_radians) / g
 
-    print(f"Estimated launch angle: {-angle_degrees} degrees")
-    print(f"Estimated initial velocity: {v0_kmph} km/h")
-    print(f"Estimated initial velocity: {v0_mph} mph")
-    print(f"Estimated flight time: {t} seconds")
-    print(f"Estimated apex height: {-h} metres")
-    print(f"Estimated horizontal distance travelled: {d} metres")
+    # Print results with signs adjusted for clarity
+    print(f"The estimated launch angle is {-angle_degrees} degrees")
+    print(f"The estimated initial velocity is {v0_kmph} km/h or {v0_mph} mph.")
+    print(f"The estimated flight time is {t} seconds.")
+    print(f"The estimated apex of the curve is {-h} meters.")
+    print(f"The estimated horizontal distance travelled is {d} meters.")
 
+# Release video resources and close display windows
 cap.release()
 cv2.destroyAllWindows()
