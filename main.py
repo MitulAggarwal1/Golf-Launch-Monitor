@@ -21,8 +21,9 @@ WRITE_ANNOTATED_MP4 = True  # Whether to save an output annotated video
 OUT_PATH = r".\ball_annotated.mp4"  # Path to output annotated video
 
 # Model paths: trained detector (YOLO, prefers OpenVINO format if available)
-OPENVINO_DIR = r"C:\Users\mitul\runs\detect\train2\weights\best_openvino_model"
-BEST_PT_PATH = r"C:\Users\mitul\runs\detect\train2\weights\best.pt"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # path to your script
+OPENVINO_DIR = os.path.join(BASE_DIR, "weights", "best_openvino_model")
+BEST_PT_PATH = os.path.join(BASE_DIR, "weights", "best.pt")
 
 # =========================
 # LOADERS AND HELPERS
