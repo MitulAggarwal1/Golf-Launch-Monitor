@@ -131,6 +131,6 @@ Golf-Launch-Monitor/
 
 ## License
 
-This project is submitted for the MIT Maker Portfolio. Contact the author for collaboration or reuse.
+Please contact the author for collaboration or reuse.
 
 ***
